@@ -645,28 +645,3 @@ def sum_node_list(node_list):
     from operator import add
     from functools import reduce
     return reduce(add, node_list)
-
-
-if __name__ == '__main__':
-    import autodiff as ad
-    import numpy as np
-
-    # x = ad.Variable(name="x")
-    # w = ad.Variable(name="w")
-    # b = ad.Variable(name="b")
-    #
-    # y = ad.matmul_op(w, x)
-    # out = y + ad.broadcastto_op(b, y)
-    #
-    # grad_w, grad_b = ad.gradients(out, [w, b])
-    #
-    # w_data = np.zeros((2, 1))
-    # b_data = np.zeros(2)
-    #
-    # executor = ad.Executor([out, grad_w, grad_b])
-    # x_data = np.array([[1, 2]])
-    #
-    # cost, w_grad, b_grad = executor.run(feed_dict={x: x_data, w: w_data, b: b_data})
-    # print('cost: {}'.format(cost))
-    # print('w_grad: {}'.format(w_grad))
-    # print('b_grad: {}'.format(b_grad))
