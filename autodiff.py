@@ -51,14 +51,14 @@ class Node(object):
         if isinstance(other, Node):
             new_node = div_op(self, other)
         else:
-            # TODO: div by const
-            pass
+            new_node = div_byconst_op(self, other)
         return new_node
 
     # Allow left-hand-side add and multiply.
     __radd__ = __add__
     __rmul__ = __mul__
     __rsub__ = __sub__
+    __rdiv__ = __truediv__
 
     def __str__(self):
         """Allow print to display node name."""
@@ -203,6 +203,7 @@ class SubByConstOp(Op):
         new_node.const_attr = const_val
         new_node.inputs = [node_A]
         new_node.name = "(%s-%s)" % (node_A.name, str(const_val))
+        return new_node
 
     def compute(self, node, input_vals):
         assert len(input_vals) == 1
@@ -210,6 +211,22 @@ class SubByConstOp(Op):
 
     def gradient(self, node, output_grad):
         return [output_grad]
+
+
+class DivByConstOp(Op):
+    def __call__(self, node_A, const_val):
+        new_node = Op.__call__(self)
+        new_node.const_attr = const_val
+        new_node.inputs = [node_A]
+        new_node.name = "(%s/%s)" % (node_A.name, str(const_val))
+        return new_node
+
+    def compute(self, node, input_vals):
+        assert len(input_vals) == 1
+        return input_vals[0] / node.const_attr
+
+    def gradient(self, node, output_grad):
+        return [output_grad / node.const_attr]
 
 
 class MulOp(Op):
@@ -419,6 +436,24 @@ class ReduceSumOp(Op):
         """ """
         return [output_grad]
 
+class BroadcastToOp(Op):
+    def __call__(self, node_A, node_B):
+        """Creates a node that represents np.broadcast_to(node_A, node_B.shape).
+        Only support axis=0. e.g. (3,4)->(2,3,4) to make gradient simple.
+        """
+        new_node = Op.__call__(self)
+        new_node.inputs = [node_A, node_B]
+        new_node.name = "BroadcastTo(%s,%s.shape)" % (node_A.name, node_B.name)
+        return new_node
+
+    def compute(self, node, input_vals):
+        assert (len(input_vals) == 2)
+        return np.broadcast_to(input_vals[0], input_vals[1].shape)
+
+    def gradient(self, node, output_grad):
+        grad_A = reduce_sum_op(output_grad)
+        grad_B = zeroslike_op(node.inputs[1])
+        return [grad_A, grad_B]
 
 # Create global singletons of operators.
 add_op = AddOp()
@@ -428,11 +463,13 @@ sub_op = SubOp()
 add_byconst_op = AddByConstOp()
 sub_byconst_op = SubByConstOp()
 mul_byconst_op = MulByConstOp()
+div_byconst_op = DivByConstOp()
 matmul_op = MatMulOp()
 placeholder_op = PlaceholderOp()
 oneslike_op = OnesLikeOp()
 zeroslike_op = ZerosLikeOp()
 reduce_sum_op = ReduceSumOp()
+broadcastto_op = BroadcastToOp()
 
 log_op = LogOp()
 exp_op = ExpOp()
@@ -580,58 +617,66 @@ if __name__ == '__main__':
     # assert np.array_equiv(grad_x2_val, np.ones_like(x2_val))
     # assert np.array_equiv(grad_x3_val, -1 * np.ones_like(x3_val))
 
-    # x = ad.Variable(name='x')
-    # y = ad.Variable(name='y')
-    # W = ad.Variable(name='W')
-    # output = ad.matmul_op(x, W)
-    # # loss function
-    # cost = 0.5 * 0.0002* ad.reduce_sum_op((y - output) * (y - output))
-    # # cost = 0.5 * ad.matmul_op((y - output), (y - output), True, False)
-    # # gradient
-    # grad_cost_w, = ad.gradients(cost, [W])
-    # # construct data set
-    # # y = x
-    # num_point = 5000
-    # x_data = np.linspace(0, 10, num_point).reshape((num_point, 1))
-    # y_data = 2*x_data + np.random.uniform(-0.1, 0.1, (num_point, 1))
-    # x_data = np.concatenate([x_data, np.ones((num_point, 1))], axis=1)
-    # # initialize the parameters
-    # w_val = np.array([[0.0],[0.0]])
-    # excutor = ad.Executor([cost, grad_cost_w])
-    # # train
-    # n_epoch = 2000
-    # lr = 0.01
-    # cost_list = []
-    # print( "training...")
-    # for i in range(n_epoch):
-    #     # evaluate the graph
-    #     cost_val, grad_cost_w_val = excutor.run(feed_dict={x: x_data, W: w_val, y: y_data})
-    #     # update the parameters using GD
-    #     print("cost: ", cost_val)
-    #     print("grad: ", grad_cost_w_val)
-    #     w_val = w_val - lr * grad_cost_w_val
-    #     print("weight: ", w_val)
-    #     cost_list.append(cost_val)
+    x = ad.Variable(name='x')
+    y = ad.Variable(name='y')
+    W = ad.Variable(name='W')
+    b = ad.Variable(name='b')
+    z = ad.matmul_op(x, W)
+    output = z + ad.broadcastto_op(b, z)
+
+    num_point = 10000000
+
+    #loss function
+    #cost = ad.reduce_sum_op((y - output) * (y - output)) / 2
+    cost = ad.reduce_sum_op((y - output) * (y - output)) / (2.0*num_point)
+    #gradient
+    grad_cost_w, grad_b = ad.gradients(cost, [W, b])
+    #construct data set
+    #y = x
+
+    x_data = np.linspace(0, 10, num_point).reshape((num_point, 1))
+    y_data = 2*x_data + np.random.uniform(-0.1, 0.1, (num_point, 1)) + 10*np.ones((num_point, 1))
+    #x_data = np.concatenate([x_data, np.ones((num_point, 1))], axis=1)
+    # initialize the parameters
+    w_val = np.zeros((1, 1))
+    b_val = np.zeros(1)
+    excutor = ad.Executor([cost, grad_cost_w, grad_b])
+    # train
+    n_epoch = 2000
+    lr = 0.01
+    cost_list = []
+    print( "training...")
+    for i in range(n_epoch):
+        # evaluate the graph
+        cost_val, grad_cost_w_val, grad_b_val = excutor.run(feed_dict={x: x_data, W: w_val, y: y_data, b: b_val})
+        # update the parameters using GD
+        print("cost: ", cost_val)
+        print("grad: ", grad_cost_w_val)
+        #print('grad_b_val: ', grad_b_val)
+        w_val = w_val - lr * grad_cost_w_val
+        b_val = b_val - lr * grad_b_val
+        print("weight: ", w_val)
+        cost_list.append(cost_val)
+    print('\n')
+    #print('W: ', w_val)
+    print('b: ', b_val)
 
     # x2 = ad.Variable(name="x2")
-    # x3 = x2 + 1
-    # x4 = x2 + x3
+    # y = x2 / (1 * 10)
     #
-    # grad_x2, grad_x3 = ad.gradients(x4, [x2, x3])
-    # executor = ad.Executor([x4, grad_x2, grad_x3])
+    # grad_x2, = ad.gradients(y, [x2])
     #
-    # x2_val = np.array([5])  # 3x2
-    # #x2_val = np.array([[1, 2], [3, 4], [5, 6]])  # 3x2
-    # y_val, x2_grad_val, x_3_val = executor.run(feed_dict={x2: x2_val})
+    # executor = ad.Executor([y, grad_x2])
+    # x2_val = np.array([10])
+    # y_val, grad_x2_val = executor.run(feed_dict={x2: x2_val})
     # print(y_val)
-    # print(x2_grad_val)
-    # print(x2_grad_val)
+    # print(grad_x2_val)
 
-    x2 = ad.Variable(name="x2")
-    y = ad.log_op(x2) + 10
-    grad_x2, = ad.gradients(y, [x2])
-    executor = ad.Executor([y, grad_x2])
-    x2_val = np.array([10])
-    y_val, grad_x2_val = executor.run(feed_dict={x2: x2_val})
-    print(y_val)
-    print(grad_x2_val)
+    # x2 = ad.Variable(name="x2")
+    # y = ad.log_op(x2) + 10
+    # grad_x2, = ad.gradients(y, [x2])
+    # executor = ad.Executor([y, grad_x2])
+    # x2_val = np.array([10])
+    # y_val, grad_x2_val = executor.run(feed_dict={x2: x2_val})
+    # print(y_val)
+    # print(grad_x2_val)
