@@ -436,6 +436,7 @@ class ReduceSumOp(Op):
         """ """
         return [output_grad]
 
+
 class BroadcastToOp(Op):
     def __call__(self, node_A, node_B):
         """Creates a node that represents np.broadcast_to(node_A, node_B.shape).
@@ -455,6 +456,54 @@ class BroadcastToOp(Op):
         grad_B = zeroslike_op(node.inputs[1])
         return [grad_A, grad_B]
 
+
+def softmax_func(y):
+    """Numerically stable softmax."""
+    b = y - np.max(y, axis=1, keepdims=True)
+    expb = np.exp(b)
+    softmax = expb / np.sum(expb, axis=1, keepdims=True)
+    return softmax
+
+
+class SoftmaxCrossEntropyOp(Op):
+    def __call__(self, node_A, node_B):
+        new_node = Op.__call__(self)
+        new_node.inputs = [node_A, node_B]
+        new_node.name = "SoftmaxXEntropy(%s,%s)" % (node_A.name, node_B.name)
+        return new_node
+
+    def compute(self, node, input_vals):
+        assert len(input_vals) == 2
+        y = input_vals[0]
+        y_ = input_vals[1]
+        softmax = softmax_func(y)
+        cross_entropy = np.mean(
+            -np.sum(y_ * np.log(softmax), axis=1), keepdims=True)
+        return cross_entropy
+
+    def gradient(self, node, output_grad):
+        grad_A = (softmax_op(node.inputs[0]) + -1 * node.inputs[1]) * output_grad
+        grad_B = zeroslike_op(node.inputs[1])
+        return [grad_A, grad_B]
+
+
+class SoftmaxOp(Op):
+    def __call__(self, node_A):
+        new_node = Op.__call__(self)
+        new_node.inputs = [node_A]
+        new_node.name = "Softmax(%s)" % (node_A.name)
+        return new_node
+
+    def compute(self, node, input_vals):
+        assert len(input_vals) == 1
+        return softmax_func(input_vals[0])
+
+    def gradient(self, node, output_grad):
+        # Do not directly use SoftmaxOp, use SoftmaxCrossEntropyOp instead.
+        # Not allowing taking 2nd derivative of SoftmaxCrossEntropyOp.
+        raise NotImplementedError
+
+
 # Create global singletons of operators.
 add_op = AddOp()
 mul_op = MulOp()
@@ -470,6 +519,8 @@ oneslike_op = OnesLikeOp()
 zeroslike_op = ZerosLikeOp()
 reduce_sum_op = ReduceSumOp()
 broadcastto_op = BroadcastToOp()
+softmax_crossentropy_op = SoftmaxCrossEntropyOp()
+softmax_op = SoftmaxOp()
 
 log_op = LogOp()
 exp_op = ExpOp()
@@ -597,86 +648,25 @@ def sum_node_list(node_list):
 
 
 if __name__ == '__main__':
-    import numpy as np
     import autodiff as ad
+    import numpy as np
 
-    # x2 = ad.Variable(name="x2")
-    # x3 = ad.Variable(name="x3")
-    # y = ad.reduce_sum_op(ad.matmul_op(x2, x3))
+    # x = ad.Variable(name="x")
+    # w = ad.Variable(name="w")
+    # b = ad.Variable(name="b")
     #
-    # grad_x2, grad_x3 = ad.gradients(y, [x2, x3])
-    # executor = ad.Executor([y,grad_x2, grad_x3])
-    # x2_val = np.array([[1, 2], [3, 4], [5, 6]])  # 3x2
-    # x3_val = np.array([[7, 8, 9], [10, 11, 12]])  # 2x3
-    # y_val, grad_x2_val, grad_x3_val = executor.run(feed_dict={x2: x2_val, x3: x3_val})
-    # print(grad_x2_val)
-    # print(grad_x3_val)
-    # #
-    # assert isinstance(y, ad.Node)
-    # assert np.array_equal(y_val, x2_val - x3_val)
-    # assert np.array_equiv(grad_x2_val, np.ones_like(x2_val))
-    # assert np.array_equiv(grad_x3_val, -1 * np.ones_like(x3_val))
-
-    x = ad.Variable(name='x')
-    y = ad.Variable(name='y')
-    W = ad.Variable(name='W')
-    b = ad.Variable(name='b')
-    z = ad.matmul_op(x, W)
-    output = z + ad.broadcastto_op(b, z)
-
-    num_point = 10000000
-
-    #loss function
-    #cost = ad.reduce_sum_op((y - output) * (y - output)) / 2
-    cost = ad.reduce_sum_op((y - output) * (y - output)) / (2.0*num_point)
-    #gradient
-    grad_cost_w, grad_b = ad.gradients(cost, [W, b])
-    #construct data set
-    #y = x
-
-    x_data = np.linspace(0, 10, num_point).reshape((num_point, 1))
-    y_data = 2*x_data + np.random.uniform(-0.1, 0.1, (num_point, 1)) + 10*np.ones((num_point, 1))
-    #x_data = np.concatenate([x_data, np.ones((num_point, 1))], axis=1)
-    # initialize the parameters
-    w_val = np.zeros((1, 1))
-    b_val = np.zeros(1)
-    excutor = ad.Executor([cost, grad_cost_w, grad_b])
-    # train
-    n_epoch = 2000
-    lr = 0.01
-    cost_list = []
-    print( "training...")
-    for i in range(n_epoch):
-        # evaluate the graph
-        cost_val, grad_cost_w_val, grad_b_val = excutor.run(feed_dict={x: x_data, W: w_val, y: y_data, b: b_val})
-        # update the parameters using GD
-        print("cost: ", cost_val)
-        print("grad: ", grad_cost_w_val)
-        #print('grad_b_val: ', grad_b_val)
-        w_val = w_val - lr * grad_cost_w_val
-        b_val = b_val - lr * grad_b_val
-        print("weight: ", w_val)
-        cost_list.append(cost_val)
-    print('\n')
-    #print('W: ', w_val)
-    print('b: ', b_val)
-
-    # x2 = ad.Variable(name="x2")
-    # y = x2 / (1 * 10)
+    # y = ad.matmul_op(w, x)
+    # out = y + ad.broadcastto_op(b, y)
     #
-    # grad_x2, = ad.gradients(y, [x2])
+    # grad_w, grad_b = ad.gradients(out, [w, b])
     #
-    # executor = ad.Executor([y, grad_x2])
-    # x2_val = np.array([10])
-    # y_val, grad_x2_val = executor.run(feed_dict={x2: x2_val})
-    # print(y_val)
-    # print(grad_x2_val)
-
-    # x2 = ad.Variable(name="x2")
-    # y = ad.log_op(x2) + 10
-    # grad_x2, = ad.gradients(y, [x2])
-    # executor = ad.Executor([y, grad_x2])
-    # x2_val = np.array([10])
-    # y_val, grad_x2_val = executor.run(feed_dict={x2: x2_val})
-    # print(y_val)
-    # print(grad_x2_val)
+    # w_data = np.zeros((2, 1))
+    # b_data = np.zeros(2)
+    #
+    # executor = ad.Executor([out, grad_w, grad_b])
+    # x_data = np.array([[1, 2]])
+    #
+    # cost, w_grad, b_grad = executor.run(feed_dict={x: x_data, w: w_data, b: b_data})
+    # print('cost: {}'.format(cost))
+    # print('w_grad: {}'.format(w_grad))
+    # print('b_grad: {}'.format(b_grad))
