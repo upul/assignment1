@@ -14,7 +14,6 @@ for j in range(K):
     X_data[ix] = np.c_[r * np.sin(t), r * np.cos(t)]
     y_data[ix] = j
 
-print(y_data.shape)
 y_one_hot = np.zeros((N * K, K))
 y_one_hot[range(N * K), y_data] = 1
 
@@ -40,16 +39,15 @@ lr = 0.01
 for i in range(n_epoch):
     loss_val, grad_w_val, grad_b_val = executor.run(feed_dict={x: X_data, w: w_val, y: y_one_hot, b: b_val})
     if i % 10 == 0:
-        print(loss_val[0])
+        print('coast after {} iterations: {}'.format(i, loss_val[0]))
     w_val = w_val - lr * grad_w_val
     b_val = b_val - lr * grad_b_val
 
 z = ad.matmul_op(x, w)
-softmax = z + ad.broadcastto_op(b, z)
-softmax = ad.softmax_op(softmax)
+before_softmax = z + ad.broadcastto_op(b, z)
+softmax = ad.softmax_op(before_softmax)
 executor = ad.Executor([softmax, x, w, b])
 a, b, c, d = executor.run(feed_dict={x: X_data, w: w_val, b: b_val})
-print(np.argmax(a, axis=1))
-print(y_data)
+
 correct = np.sum(np.equal(y_data, np.argmax(a, axis=1)))
-print(correct / (N * K))
+print('prediction accuracy: {}'.format(correct / (N * K)))
